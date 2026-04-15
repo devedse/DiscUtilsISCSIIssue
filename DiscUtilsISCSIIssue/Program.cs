@@ -44,7 +44,7 @@ var sshPassword = Environment.GetEnvironmentVariable("SSH_PASSWORD") ?? "Integra
 var volumeGroup = Environment.GetEnvironmentVariable("VOLUME_GROUP") ?? "iscsi_thick_vg";
 var thinPool = Environment.GetEnvironmentVariable("THIN_POOL") ?? "iscsi_thin_pool";
 
-const string diskName = "repro_test";
+const string diskName = "reprotest";
 const string baseIqn = "iqn.2024-11.local.discutils-repro";
 var iqn = $"{baseIqn}:{diskName}";
 var lvName = $"iscsi_{diskName}";
