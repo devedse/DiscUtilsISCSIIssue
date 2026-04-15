@@ -8,29 +8,21 @@ using DiscUtils.Streams;
 using Renci.SshNet;
 
 // ============================================================================
-// DiscUtils iSCSI Issue Reproduction
+// DiscUtils iSCSI — GPT + NTFS Verification
 // ============================================================================
 //
-// This program demonstrates issues with DiscUtils' iSCSI initiator when
-// formatting and reading back GPT + NTFS partitions on an iSCSI disk.
+// This program verifies that DiscUtils' iSCSI initiator can correctly format
+// a GPT + NTFS partition and read it back, both within a single session and
+// across separate sessions.
 //
-// Observed behavior (both tests FAIL):
+// Key finding: GuidPartitionTable.CreateAligned() returns partition index 1
+// (not 0), because GPT automatically creates a Microsoft Reserved partition
+// at index 0. Code that blindly uses Partitions[0] will get the reserved
+// partition (no filesystem) instead of the actual data partition.
 //
-// Test 1 — Single Session (format + write + read in one iSCSI session):
-//   - GPT is initialized, one NTFS partition is created (e.g. FirstSector=67584)
-//   - NTFS format completes successfully
-//   - When re-reading the GPT from the same disk object, the partition table
-//     returns 2 partitions instead of 1, and Partitions[0] points to a
-//     different region (FirstSector=34) than the one that was formatted
-//   - DetectFileSystems returns 0 results on ALL partitions
-//
-// Test 2 — Multi Session (format in session 1, read in session 2):
-//   - Same as Test 1, but the read happens in a new iSCSI session
-//   - Same failure: GPT returns 2 partitions, NTFS not detected on any
-//
-// The issue appears to be that data written via DiscUtils' iSCSI initiator
-// (AligningStream wrapping DiskStream) is not reliably persisted or read
-// back, even within the same session. DiskStream.Flush() is also a no-op.
+// Both tests PASS when iterating all partitions to find the NTFS one:
+//   - Test 1: Single session — format + write + read (PASSES)
+//   - Test 2: Multi session — format in session 1, write+read in session 2 (PASSES)
 //
 // Environment variables:
 //   ISCSI_HOST     - iSCSI server IP (default: 127.0.0.1)
