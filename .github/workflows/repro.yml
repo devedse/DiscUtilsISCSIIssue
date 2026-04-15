@@ -1,0 +1,58 @@
+name: DiscUtils iSCSI Repro
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  repro_iscsi_flush:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+    - uses: actions/checkout@v6
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v5
+      with:
+        dotnet-version: 10.0.x
+    - name: Install iSCSI target tools and LVM
+      run: |
+        sudo apt-get update -y
+        sudo apt-get install -y targetcli-fb lvm2 openssh-server
+    - name: Load kernel modules
+      run: |
+        sudo modprobe configfs
+        sudo modprobe target_core_mod
+        sudo modprobe iscsi_target_mod
+        sudo modprobe dm_thin_pool
+        sudo mkdir -p /sys/kernel/config
+        mountpoint -q /sys/kernel/config || sudo mount -t configfs configfs /sys/kernel/config
+        echo "=== Loaded modules ==="
+        lsmod | grep -E 'configfs|target_core_mod|iscsi_target_mod|dm_thin_pool' || true
+    - name: Set up LVM thin provisioning
+      run: |
+        sudo truncate -s 100G /tmp/iscsi-backing.img
+        LOOP_DEV=$(sudo losetup --find --show /tmp/iscsi-backing.img)
+        echo "Loop device: $LOOP_DEV"
+        sudo pvcreate "$LOOP_DEV"
+        sudo vgcreate iscsi_thick_vg "$LOOP_DEV"
+        sudo lvcreate -l 100%FREE --type thin-pool -n iscsi_thin_pool iscsi_thick_vg
+        echo "=== LVM setup ==="
+        sudo pvs
+        sudo vgs
+        sudo lvs
+    - name: Initialize targetcli
+      run: |
+        sudo targetcli / ls
+        sudo targetcli saveconfig
+    - name: Configure SSH for root access
+      run: |
+        sudo mkdir -p /run/sshd
+        echo "PermitRootLogin yes" | sudo tee -a /etc/ssh/sshd_config
+        echo "root:IntegrationTestPassword123!" | sudo chpasswd
+        sudo systemctl restart sshd || sudo service ssh restart
+        echo "=== SSH ready ==="
+        ssh-keyscan -H 127.0.0.1 2>/dev/null | head -5
+    - name: dotnet build
+      run: dotnet build -c Release
+    - name: Run reproduction
+      run: dotnet run --project DiscUtilsISCSIIssue/DiscUtilsISCSIIssue.csproj -c Release --no-build
