@@ -56,3 +56,6 @@ jobs:
       run: dotnet build -c Release
     - name: Run reproduction
       run: dotnet run --project DiscUtilsISCSIIssue/DiscUtilsISCSIIssue.csproj -c Release --no-build
+    - name: Show dmesg output
+      if: always()
+      run: sudo dmesg
