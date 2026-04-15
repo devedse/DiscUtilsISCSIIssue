@@ -11,29 +11,36 @@ using Renci.SshNet;
 // DiscUtils iSCSI Issue Reproduction
 // ============================================================================
 //
-// This program demonstrates a bug where DiscUtils' iSCSI DiskStream.Flush()
-// is a no-op. When you:
-//   1. Open an iSCSI session
-//   2. Format a disk as GPT + NTFS
-//   3. Close the session
-//   4. Open a NEW iSCSI session
-//   5. Try to detect the NTFS filesystem
+// This program demonstrates issues with DiscUtils' iSCSI initiator when
+// formatting and reading back GPT + NTFS partitions on an iSCSI disk.
 //
-// Step 5 fails with "NTFS filesystem not detected" because the format data
-// from step 2 was never actually flushed/synced to the iSCSI target.
+// Observed behavior (both tests FAIL):
 //
-// However, if you do everything in a SINGLE session (format + write + read),
-// it works fine because the data stays in the same connection's buffers.
+// Test 1 — Single Session (format + write + read in one iSCSI session):
+//   - GPT is initialized, one NTFS partition is created (e.g. FirstSector=67584)
+//   - NTFS format completes successfully
+//   - When re-reading the GPT from the same disk object, the partition table
+//     returns 2 partitions instead of 1, and Partitions[0] points to a
+//     different region (FirstSector=34) than the one that was formatted
+//   - DetectFileSystems returns 0 results on ALL partitions
 //
-// Environment requirements (set via environment variables):
+// Test 2 — Multi Session (format in session 1, read in session 2):
+//   - Same as Test 1, but the read happens in a new iSCSI session
+//   - Same failure: GPT returns 2 partitions, NTFS not detected on any
+//
+// The issue appears to be that data written via DiscUtils' iSCSI initiator
+// (AligningStream wrapping DiskStream) is not reliably persisted or read
+// back, even within the same session. DiskStream.Flush() is also a no-op.
+//
+// Environment variables:
 //   ISCSI_HOST     - iSCSI server IP (default: 127.0.0.1)
 //   SSH_USERNAME   - SSH username (default: root)
 //   SSH_PASSWORD   - SSH password (default: IntegrationTestPassword123!)
 //   VOLUME_GROUP   - LVM volume group (default: iscsi_thick_vg)
 //   THIN_POOL      - LVM thin pool (default: iscsi_thin_pool)
 //
-// The server must have targetcli-fb and LVM thin provisioning set up.
-// See the GitHub Actions workflow for the exact setup steps.
+// Requires: targetcli-fb + LVM thin provisioning on the server.
+// See .github/workflows/repro.yml for the exact setup steps.
 // ============================================================================
 
 SetupHelper.SetupCompleteAot();
@@ -44,68 +51,84 @@ var sshPassword = Environment.GetEnvironmentVariable("SSH_PASSWORD") ?? "Integra
 var volumeGroup = Environment.GetEnvironmentVariable("VOLUME_GROUP") ?? "iscsi_thick_vg";
 var thinPool = Environment.GetEnvironmentVariable("THIN_POOL") ?? "iscsi_thin_pool";
 
-const string diskName = "reprotest";
 const string baseIqn = "iqn.2024-11.local.discutils-repro";
-var iqn = $"{baseIqn}:{diskName}";
-var lvName = $"iscsi_{diskName}";
-var backstoreName = $"disk_{diskName}";
 const int diskSizeGb = 1;
 const int iscsiPort = 3260;
 const int partitionAlignment = 1024 * 1024;
 
-Console.WriteLine("=== DiscUtils iSCSI Flush Issue Reproduction ===");
-Console.WriteLine($"Host: {host}, IQN: {iqn}");
-Console.WriteLine();
-
-// --- Step 1: Create the iSCSI disk via SSH + targetcli ---
-Console.WriteLine("[Setup] Creating iSCSI disk via SSH...");
-CreateDiskViaSsh(host, sshUsername, sshPassword, volumeGroup, thinPool, diskName, lvName, backstoreName, iqn, diskSizeGb);
-Console.WriteLine("[Setup] Disk created successfully.");
+Console.WriteLine("=== DiscUtils iSCSI Issue Reproduction ===");
+Console.WriteLine($"Host: {host}");
 Console.WriteLine();
 
 var allPassed = true;
 
-// --- Test 1: Single session (format + write + read) — should PASS ---
-Console.WriteLine("=== Test 1: Single Session (format + write + read) ===");
-try
+// =========================================================================
+// Test 1: Single Session — format + write + read in one iSCSI session
+// =========================================================================
 {
-    var result = SingleSessionFormatWriteRead(iqn, host, iscsiPort, diskName, partitionAlignment);
-    Console.WriteLine($"[Test 1] PASSED — Read back: \"{result}\"");
-}
-catch (Exception ex)
-{
-    Console.WriteLine($"[Test 1] FAILED — {ex.Message}");
-    allPassed = false;
-}
-Console.WriteLine();
+    const string diskName = "test1";
+    var iqn = $"{baseIqn}:{diskName}";
+    var lvName = $"iscsi_{diskName}";
+    var backstoreName = $"disk_{diskName}";
 
-// --- Recreate disk for Test 2 (clean slate) ---
-Console.WriteLine("[Setup] Removing and recreating disk for Test 2...");
-RemoveDiskViaSsh(host, sshUsername, sshPassword, volumeGroup, diskName, lvName, backstoreName, iqn);
-CreateDiskViaSsh(host, sshUsername, sshPassword, volumeGroup, thinPool, diskName, lvName, backstoreName, iqn, diskSizeGb);
-Console.WriteLine("[Setup] Disk recreated.");
-Console.WriteLine();
+    Console.WriteLine("=== Test 1: Single Session (format + write + read) ===");
+    Console.WriteLine($"  IQN: {iqn}");
 
-// --- Test 2: Multi session (format in session 1, write in session 2) — should FAIL ---
-Console.WriteLine("=== Test 2: Multi Session (format in session 1, write+read in session 2) ===");
-try
-{
-    MultiSessionFormatThenWriteRead(iqn, host, iscsiPort, diskName, partitionAlignment);
-    Console.WriteLine("[Test 2] PASSED — Multi-session worked (unexpected!)");
-}
-catch (Exception ex)
-{
-    Console.WriteLine($"[Test 2] FAILED — {ex.Message}");
-    Console.WriteLine("[Test 2] This is the expected failure demonstrating the DiskStream.Flush() no-op bug.");
-    allPassed = false;
-}
-Console.WriteLine();
+    Console.WriteLine("  [Setup] Creating iSCSI disk...");
+    CreateDiskViaSsh(host, sshUsername, sshPassword, volumeGroup, thinPool, diskName, lvName, backstoreName, iqn, diskSizeGb);
+    Console.WriteLine("  [Setup] Disk created.");
 
-// --- Cleanup ---
-Console.WriteLine("[Cleanup] Removing iSCSI disk...");
-RemoveDiskViaSsh(host, sshUsername, sshPassword, volumeGroup, diskName, lvName, backstoreName, iqn);
-Console.WriteLine("[Cleanup] Done.");
-Console.WriteLine();
+    try
+    {
+        var result = SingleSessionFormatWriteRead(iqn, host, iscsiPort, diskName, partitionAlignment);
+        Console.WriteLine($"[Test 1] PASSED — Read back: \"{result}\"");
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"[Test 1] FAILED — {ex.Message}");
+        allPassed = false;
+    }
+
+    Console.WriteLine("  [Cleanup] Removing disk...");
+    RemoveDiskViaSsh(host, sshUsername, sshPassword, volumeGroup, diskName, lvName, backstoreName, iqn);
+    Console.WriteLine("  [Cleanup] Done.");
+    Console.WriteLine();
+}
+
+// =========================================================================
+// Test 2: Multi Session — format in session 1, write + read in session 2
+// =========================================================================
+{
+    const string diskName = "test2";
+    var iqn = $"{baseIqn}:{diskName}";
+    var lvName = $"iscsi_{diskName}";
+    var backstoreName = $"disk_{diskName}";
+
+    Console.WriteLine("=== Test 2: Multi Session (format in session 1, write+read in session 2) ===");
+    Console.WriteLine($"  IQN: {iqn}");
+
+    Console.WriteLine("  [Setup] Creating iSCSI disk...");
+    CreateDiskViaSsh(host, sshUsername, sshPassword, volumeGroup, thinPool, diskName, lvName, backstoreName, iqn, diskSizeGb);
+    Console.WriteLine("  [Setup] Disk created.");
+
+    try
+    {
+        MultiSessionFormatThenWriteRead(iqn, host, iscsiPort, diskName, partitionAlignment);
+        Console.WriteLine("[Test 2] PASSED");
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"[Test 2] FAILED — {ex.Message}");
+        allPassed = false;
+    }
+
+    Console.WriteLine("  [Cleanup] Removing disk...");
+    RemoveDiskViaSsh(host, sshUsername, sshPassword, volumeGroup, diskName, lvName, backstoreName, iqn);
+    Console.WriteLine("  [Cleanup] Done.");
+    Console.WriteLine();
+}
+
+// =========================================================================
 
 if (allPassed)
 {
@@ -125,94 +148,115 @@ else
 static string SingleSessionFormatWriteRead(
     string iqn, string host, int port, string diskName, int alignment)
 {
-    Console.WriteLine("  [SS] Connecting to iSCSI target...");
+    Console.WriteLine("  Connecting to iSCSI target...");
     var targetInfo = new TargetInfo(iqn, [new TargetAddress(host, port, "iscsi")]);
     var initiator = new Initiator();
     using var session = initiator.ConnectTo(targetInfo);
     var luns = session.GetLuns();
-    Console.WriteLine($"  [SS] LUNs found: {luns.Length}");
+    Console.WriteLine($"  LUNs found: {luns.Length}");
     if (luns.Length == 0) throw new InvalidOperationException("No LUNs found");
 
     using var iscsiDisk = session.OpenDisk(luns[0].Lun, FileAccess.ReadWrite);
-    Console.WriteLine($"  [SS] Disk opened. Content type: {iscsiDisk.Content.GetType().FullName}, Length: {iscsiDisk.Content.Length}");
+    Console.WriteLine($"  Disk opened. Content type: {iscsiDisk.Content.GetType().FullName}, Length: {iscsiDisk.Content.Length}");
     using var disk = new DiscUtils.Raw.Disk(iscsiDisk.Content, Ownership.None);
     var geometry = disk.Geometry ?? throw new InvalidOperationException("No geometry");
-    Console.WriteLine($"  [SS] Geometry: Cylinders={geometry.Cylinders}, Heads={geometry.HeadsPerCylinder}, Sectors={geometry.SectorsPerTrack}, BytesPerSector={geometry.BytesPerSector}");
+    Console.WriteLine($"  Geometry: C={geometry.Cylinders}, H={geometry.HeadsPerCylinder}, S={geometry.SectorsPerTrack}, BPS={geometry.BytesPerSector}");
 
-    // Format
-    Console.WriteLine("  [SS] Step 1: Initializing GPT...");
+    // Step 1: Format
+    Console.WriteLine("  Step 1: Initializing GPT...");
     var gpt = GuidPartitionTable.Initialize(disk);
-    Console.WriteLine($"  [SS] GPT initialized. Creating aligned NTFS partition (alignment={alignment})...");
+    Console.WriteLine($"  GPT initialized. Creating aligned NTFS partition (alignment={alignment})...");
     var partIdx = gpt.CreateAligned(WellKnownPartitionType.WindowsNtfs, false, alignment);
     var partition = gpt[partIdx];
-    Console.WriteLine($"  [SS] Partition created: FirstSector={partition.FirstSector}, SectorCount={partition.SectorCount}, Type={partition.TypeAsString}");
+    Console.WriteLine($"  Partition created at index {partIdx}: FirstSector={partition.FirstSector}, SectorCount={partition.SectorCount}, Type={partition.TypeAsString}");
     using (var ps = partition.Open())
     {
-        Console.WriteLine($"  [SS] Partition stream opened. Length={ps.Length}, Position={ps.Position}");
-        Console.WriteLine("  [SS] Formatting as NTFS...");
+        Console.WriteLine($"  Partition stream: Length={ps.Length}, Position={ps.Position}");
+        Console.WriteLine("  Formatting as NTFS...");
         using var fs = NtfsFileSystem.Format(ps, diskName, geometry, partition.FirstSector, partition.SectorCount);
-        Console.WriteLine("  [SS] NTFS format completed.");
+        Console.WriteLine("  NTFS format completed.");
     }
 
-    Console.WriteLine("  [SS] Calling Flush() on iSCSI disk content stream...");
+    Console.WriteLine("  Calling Flush() on iSCSI disk content stream...");
     iscsiDisk.Content.Flush();
-    Console.WriteLine("  [SS] Flush() called. Waiting 30 seconds...");
-    Thread.Sleep(TimeSpan.FromSeconds(30));
-    Console.WriteLine("  [SS] 30 second delay complete.");
+    Console.WriteLine("  Flush() called.");
 
-    // Write
-    Console.WriteLine("  [SS] Step 2: Re-reading GPT to find partition for write...");
+    // Step 2: Re-read partition table and try to detect NTFS on all partitions
+    Console.WriteLine("  Step 2: Re-reading GPT...");
     var gpt2 = new GuidPartitionTable(disk);
-    Console.WriteLine($"  [SS] GPT2 partition count: {gpt2.Partitions.Count}");
-    var writePart = gpt2.Partitions[0];
-    Console.WriteLine($"  [SS] Write partition: FirstSector={writePart.FirstSector}, SectorCount={writePart.SectorCount}");
-    using (var ps = writePart.Open())
+    Console.WriteLine($"  GPT partition count: {gpt2.Partitions.Count}");
+
+    DiscUtils.FileSystemInfo? ntfsInfo = null;
+    SparseStream? ntfsPartStream = null;
+    for (var i = 0; i < gpt2.Partitions.Count; i++)
     {
-        Console.WriteLine($"  [SS] Write partition stream opened. Length={ps.Length}, Position={ps.Position}");
+        var p = gpt2.Partitions[i];
+        Console.WriteLine($"  Partition[{i}]: FirstSector={p.FirstSector}, SectorCount={p.SectorCount}, Type={p.TypeAsString}");
+        var ps = p.Open();
+        Console.WriteLine($"    Stream: Length={ps.Length}, Position={ps.Position}");
         var fsInfos = FileSystemManager.DetectFileSystems(ps);
-        Console.WriteLine($"  [SS] DetectFileSystems returned {fsInfos.Count} results:");
+        Console.WriteLine($"    DetectFileSystems: {fsInfos.Count} results");
         foreach (var fi in fsInfos)
         {
-            Console.WriteLine($"    - Name={fi.Name}, Description={fi.Description}");
+            Console.WriteLine($"      - {fi.Name}: {fi.Description}");
         }
-        var ntfsInfo = fsInfos.FirstOrDefault(f => f.Name == "NTFS")
-            ?? throw new InvalidOperationException($"NTFS not detected for write (single session). Detected {fsInfos.Count} filesystems: [{string.Join(", ", fsInfos.Select(f => f.Name))}]");
-        using var fs = ntfsInfo.Open(ps);
+        var ntfs = fsInfos.FirstOrDefault(f => f.Name == "NTFS");
+        if (ntfs != null)
+        {
+            Console.WriteLine($"    NTFS found on partition[{i}]!");
+            ntfsInfo = ntfs;
+            ntfsPartStream = ps;
+        }
+        else
+        {
+            ps.Dispose();
+        }
+    }
+
+    if (ntfsInfo == null || ntfsPartStream == null)
+    {
+        throw new InvalidOperationException(
+            $"NTFS not detected on any of the {gpt2.Partitions.Count} partitions (single session). " +
+            $"Original partition was at index {partIdx}, FirstSector={partition.FirstSector}.");
+    }
+
+    // Step 3: Write + Read
+    Console.WriteLine("  Step 3: Writing file...");
+    using (ntfsPartStream)
+    {
+        using var fs = ntfsInfo.Open(ntfsPartStream);
         using var fileStream = fs.OpenFile("hello.txt", FileMode.Create, FileAccess.Write);
         using var writer = new StreamWriter(fileStream, new UTF8Encoding(false), leaveOpen: true);
         writer.Write("single-session-test");
         writer.Flush();
-        Console.WriteLine("  [SS] File written successfully.");
+        Console.WriteLine("  File written.");
     }
 
-    // Read
-    Console.WriteLine("  [SS] Step 3: Re-reading GPT to find partition for read...");
+    Console.WriteLine("  Step 4: Reading file back...");
     var gpt3 = new GuidPartitionTable(disk);
-    Console.WriteLine($"  [SS] GPT3 partition count: {gpt3.Partitions.Count}");
-    var readPart = gpt3.Partitions[0];
-    using (var ps = readPart.Open())
+    for (var i = 0; i < gpt3.Partitions.Count; i++)
     {
-        Console.WriteLine($"  [SS] Read partition stream opened. Length={ps.Length}, Position={ps.Position}");
+        var p = gpt3.Partitions[i];
+        using var ps = p.Open();
         var fsInfos = FileSystemManager.DetectFileSystems(ps);
-        Console.WriteLine($"  [SS] DetectFileSystems returned {fsInfos.Count} results:");
-        foreach (var fi in fsInfos)
+        var ntfs = fsInfos.FirstOrDefault(f => f.Name == "NTFS");
+        if (ntfs != null)
         {
-            Console.WriteLine($"    - Name={fi.Name}, Description={fi.Description}");
+            using var fs = ntfs.Open(ps);
+            using var fileStream = fs.OpenFile("hello.txt", FileMode.Open, FileAccess.Read);
+            using var reader = new StreamReader(fileStream, Encoding.UTF8, true, leaveOpen: true);
+            return reader.ReadToEnd();
         }
-        var ntfsInfo = fsInfos.FirstOrDefault(f => f.Name == "NTFS")
-            ?? throw new InvalidOperationException($"NTFS not detected for read (single session). Detected {fsInfos.Count} filesystems: [{string.Join(", ", fsInfos.Select(f => f.Name))}]");
-        using var fs = ntfsInfo.Open(ps);
-        using var fileStream = fs.OpenFile("hello.txt", FileMode.Open, FileAccess.Read);
-        using var reader = new StreamReader(fileStream, Encoding.UTF8, true, leaveOpen: true);
-        return reader.ReadToEnd();
     }
+
+    throw new InvalidOperationException("NTFS not detected on any partition during read-back.");
 }
 
 static void MultiSessionFormatThenWriteRead(
     string iqn, string host, int port, string diskName, int alignment)
 {
-    // --- Session 1: Format as NTFS ---
-    Console.WriteLine("  [Session 1] Connecting to iSCSI target...");
+    // --- Session 1: Format ---
+    Console.WriteLine("  [Session 1] Connecting...");
     {
         var targetInfo = new TargetInfo(iqn, [new TargetAddress(host, port, "iscsi")]);
         var initiator = new Initiator();
@@ -231,26 +275,22 @@ static void MultiSessionFormatThenWriteRead(
         var gpt = GuidPartitionTable.Initialize(disk);
         var partIdx = gpt.CreateAligned(WellKnownPartitionType.WindowsNtfs, false, alignment);
         var partition = gpt[partIdx];
-        Console.WriteLine($"  [Session 1] Partition: FirstSector={partition.FirstSector}, SectorCount={partition.SectorCount}");
+        Console.WriteLine($"  [Session 1] Partition at index {partIdx}: FirstSector={partition.FirstSector}, SectorCount={partition.SectorCount}");
 
         using var partStream = partition.Open();
-        Console.WriteLine($"  [Session 1] Partition stream Length={partStream.Length}");
+        Console.WriteLine($"  [Session 1] Partition stream: Length={partStream.Length}");
         Console.WriteLine("  [Session 1] Formatting as NTFS...");
         using var fs = NtfsFileSystem.Format(partStream, diskName, geometry, partition.FirstSector, partition.SectorCount);
         Console.WriteLine("  [Session 1] NTFS format completed.");
 
-        // Explicitly call Flush() — this is where the bug is (it's a no-op)
-        Console.WriteLine("  [Session 1] Calling Flush() on iSCSI disk content stream...");
+        Console.WriteLine("  [Session 1] Calling Flush()...");
         iscsiDisk.Content.Flush();
-        Console.WriteLine("  [Session 1] Flush() called. Closing session...");
+        Console.WriteLine("  [Session 1] Closing session...");
     }
-    // Session 1 is now fully disposed
-    Console.WriteLine("  [Session 1] Session disposed. Waiting 30 seconds...");
-    Thread.Sleep(TimeSpan.FromSeconds(30));
-    Console.WriteLine("  [Session 1] 30 second delay complete.");
+    Console.WriteLine("  [Session 1] Session disposed.");
 
-    // --- Session 2: Try to detect filesystem and write ---
-    Console.WriteLine("  [Session 2] Connecting to iSCSI target...");
+    // --- Session 2: Read back ---
+    Console.WriteLine("  [Session 2] Connecting...");
     {
         var targetInfo = new TargetInfo(iqn, [new TargetAddress(host, port, "iscsi")]);
         var initiator = new Initiator();
@@ -266,31 +306,52 @@ static void MultiSessionFormatThenWriteRead(
         Console.WriteLine("  [Session 2] Reading GPT...");
         var gpt = new GuidPartitionTable(disk);
         Console.WriteLine($"  [Session 2] Partition count: {gpt.Partitions.Count}");
-        var partition = gpt.Partitions.FirstOrDefault()
-            ?? throw new InvalidOperationException("No partitions found in session 2");
-        Console.WriteLine($"  [Session 2] Partition: FirstSector={partition.FirstSector}, SectorCount={partition.SectorCount}");
 
-        using var partStream = partition.Open();
-        Console.WriteLine($"  [Session 2] Partition stream Length={partStream.Length}, Position={partStream.Position}");
-        var fsInfos = FileSystemManager.DetectFileSystems(partStream);
-        Console.WriteLine($"  [Session 2] DetectFileSystems returned {fsInfos.Count} results:");
-        foreach (var fi in fsInfos)
+        var foundNtfs = false;
+        for (var i = 0; i < gpt.Partitions.Count; i++)
         {
-            Console.WriteLine($"    - Name={fi.Name}, Description={fi.Description}");
+            var p = gpt.Partitions[i];
+            Console.WriteLine($"  [Session 2] Partition[{i}]: FirstSector={p.FirstSector}, SectorCount={p.SectorCount}, Type={p.TypeAsString}");
+            using var ps = p.Open();
+            Console.WriteLine($"    Stream: Length={ps.Length}, Position={ps.Position}");
+            var fsInfos = FileSystemManager.DetectFileSystems(ps);
+            Console.WriteLine($"    DetectFileSystems: {fsInfos.Count} results");
+            foreach (var fi in fsInfos)
+            {
+                Console.WriteLine($"      - {fi.Name}: {fi.Description}");
+            }
+            if (fsInfos.Any(f => f.Name == "NTFS"))
+            {
+                Console.WriteLine($"    NTFS found on partition[{i}]!");
+                foundNtfs = true;
+            }
         }
-        var ntfsInfo = fsInfos.FirstOrDefault(f => f.Name == "NTFS")
-            ?? throw new InvalidOperationException(
-                $"NTFS filesystem not detected in session 2! " +
-                $"Detected {fsInfos.Count} filesystems: [{string.Join(", ", fsInfos.Select(f => f.Name))}]. " +
-                $"This demonstrates the DiskStream.Flush() no-op bug — " +
-                $"data written in session 1 was never synced to the iSCSI target.");
 
-        using var fs = ntfsInfo.Open(partStream);
-        using var fileStream = fs.OpenFile("hello.txt", FileMode.Create, FileAccess.Write);
-        using var writer = new StreamWriter(fileStream, new UTF8Encoding(false), leaveOpen: true);
-        writer.Write("multi-session-test");
-        writer.Flush();
-        Console.WriteLine("  [Session 2] File written successfully.");
+        if (!foundNtfs)
+        {
+            throw new InvalidOperationException(
+                $"NTFS not detected on any of the {gpt.Partitions.Count} partitions in session 2. " +
+                $"Data written in session 1 was not persisted to the iSCSI target.");
+        }
+
+        Console.WriteLine("  [Session 2] NTFS detected. Writing file...");
+        // Find the NTFS partition again to write
+        for (var i = 0; i < gpt.Partitions.Count; i++)
+        {
+            using var ps = gpt.Partitions[i].Open();
+            var fsInfos = FileSystemManager.DetectFileSystems(ps);
+            var ntfs = fsInfos.FirstOrDefault(f => f.Name == "NTFS");
+            if (ntfs != null)
+            {
+                using var fs = ntfs.Open(ps);
+                using var fileStream = fs.OpenFile("hello.txt", FileMode.Create, FileAccess.Write);
+                using var writer = new StreamWriter(fileStream, new UTF8Encoding(false), leaveOpen: true);
+                writer.Write("multi-session-test");
+                writer.Flush();
+                Console.WriteLine("  [Session 2] File written successfully.");
+                return;
+            }
+        }
     }
 }
 
