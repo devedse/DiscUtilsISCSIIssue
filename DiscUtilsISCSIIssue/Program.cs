@@ -1,4 +1,4 @@
-﻿using System.Text;
+using System.Text;
 using DiscUtils;
 using DiscUtils.Complete;
 using DiscUtils.Iscsi;
@@ -125,48 +125,76 @@ else
 static string SingleSessionFormatWriteRead(
     string iqn, string host, int port, string diskName, int alignment)
 {
+    Console.WriteLine("  [SS] Connecting to iSCSI target...");
     var targetInfo = new TargetInfo(iqn, [new TargetAddress(host, port, "iscsi")]);
     var initiator = new Initiator();
     using var session = initiator.ConnectTo(targetInfo);
     var luns = session.GetLuns();
+    Console.WriteLine($"  [SS] LUNs found: {luns.Length}");
     if (luns.Length == 0) throw new InvalidOperationException("No LUNs found");
 
     using var iscsiDisk = session.OpenDisk(luns[0].Lun, FileAccess.ReadWrite);
+    Console.WriteLine($"  [SS] Disk opened. Content type: {iscsiDisk.Content.GetType().FullName}, Length: {iscsiDisk.Content.Length}");
     using var disk = new DiscUtils.Raw.Disk(iscsiDisk.Content, Ownership.None);
     var geometry = disk.Geometry ?? throw new InvalidOperationException("No geometry");
+    Console.WriteLine($"  [SS] Geometry: Cylinders={geometry.Cylinders}, Heads={geometry.HeadsPerCylinder}, Sectors={geometry.SectorsPerTrack}, BytesPerSector={geometry.BytesPerSector}");
 
     // Format
+    Console.WriteLine("  [SS] Step 1: Initializing GPT...");
     var gpt = GuidPartitionTable.Initialize(disk);
+    Console.WriteLine($"  [SS] GPT initialized. Creating aligned NTFS partition (alignment={alignment})...");
     var partIdx = gpt.CreateAligned(WellKnownPartitionType.WindowsNtfs, false, alignment);
     var partition = gpt[partIdx];
+    Console.WriteLine($"  [SS] Partition created: FirstSector={partition.FirstSector}, SectorCount={partition.SectorCount}, Type={partition.TypeAsString}");
     using (var ps = partition.Open())
     {
+        Console.WriteLine($"  [SS] Partition stream opened. Length={ps.Length}, Position={ps.Position}");
+        Console.WriteLine("  [SS] Formatting as NTFS...");
         using var fs = NtfsFileSystem.Format(ps, diskName, geometry, partition.FirstSector, partition.SectorCount);
+        Console.WriteLine("  [SS] NTFS format completed.");
     }
 
     // Write
+    Console.WriteLine("  [SS] Step 2: Re-reading GPT to find partition for write...");
     var gpt2 = new GuidPartitionTable(disk);
+    Console.WriteLine($"  [SS] GPT2 partition count: {gpt2.Partitions.Count}");
     var writePart = gpt2.Partitions[0];
+    Console.WriteLine($"  [SS] Write partition: FirstSector={writePart.FirstSector}, SectorCount={writePart.SectorCount}");
     using (var ps = writePart.Open())
     {
+        Console.WriteLine($"  [SS] Write partition stream opened. Length={ps.Length}, Position={ps.Position}");
         var fsInfos = FileSystemManager.DetectFileSystems(ps);
+        Console.WriteLine($"  [SS] DetectFileSystems returned {fsInfos.Count} results:");
+        foreach (var fi in fsInfos)
+        {
+            Console.WriteLine($"    - Name={fi.Name}, Description={fi.Description}");
+        }
         var ntfsInfo = fsInfos.FirstOrDefault(f => f.Name == "NTFS")
-            ?? throw new InvalidOperationException("NTFS not detected for write (single session)");
+            ?? throw new InvalidOperationException($"NTFS not detected for write (single session). Detected {fsInfos.Count} filesystems: [{string.Join(", ", fsInfos.Select(f => f.Name))}]");
         using var fs = ntfsInfo.Open(ps);
         using var fileStream = fs.OpenFile("hello.txt", FileMode.Create, FileAccess.Write);
         using var writer = new StreamWriter(fileStream, new UTF8Encoding(false), leaveOpen: true);
         writer.Write("single-session-test");
         writer.Flush();
+        Console.WriteLine("  [SS] File written successfully.");
     }
 
     // Read
+    Console.WriteLine("  [SS] Step 3: Re-reading GPT to find partition for read...");
     var gpt3 = new GuidPartitionTable(disk);
+    Console.WriteLine($"  [SS] GPT3 partition count: {gpt3.Partitions.Count}");
     var readPart = gpt3.Partitions[0];
     using (var ps = readPart.Open())
     {
+        Console.WriteLine($"  [SS] Read partition stream opened. Length={ps.Length}, Position={ps.Position}");
         var fsInfos = FileSystemManager.DetectFileSystems(ps);
+        Console.WriteLine($"  [SS] DetectFileSystems returned {fsInfos.Count} results:");
+        foreach (var fi in fsInfos)
+        {
+            Console.WriteLine($"    - Name={fi.Name}, Description={fi.Description}");
+        }
         var ntfsInfo = fsInfos.FirstOrDefault(f => f.Name == "NTFS")
-            ?? throw new InvalidOperationException("NTFS not detected for read (single session)");
+            ?? throw new InvalidOperationException($"NTFS not detected for read (single session). Detected {fsInfos.Count} filesystems: [{string.Join(", ", fsInfos.Select(f => f.Name))}]");
         using var fs = ntfsInfo.Open(ps);
         using var fileStream = fs.OpenFile("hello.txt", FileMode.Open, FileAccess.Read);
         using var reader = new StreamReader(fileStream, Encoding.UTF8, true, leaveOpen: true);
@@ -178,54 +206,76 @@ static void MultiSessionFormatThenWriteRead(
     string iqn, string host, int port, string diskName, int alignment)
 {
     // --- Session 1: Format as NTFS ---
-    Console.WriteLine("  [Session 1] Formatting as GPT + NTFS...");
+    Console.WriteLine("  [Session 1] Connecting to iSCSI target...");
     {
         var targetInfo = new TargetInfo(iqn, [new TargetAddress(host, port, "iscsi")]);
         var initiator = new Initiator();
         using var session = initiator.ConnectTo(targetInfo);
         var luns = session.GetLuns();
+        Console.WriteLine($"  [Session 1] LUNs found: {luns.Length}");
         if (luns.Length == 0) throw new InvalidOperationException("No LUNs found");
 
         using var iscsiDisk = session.OpenDisk(luns[0].Lun, FileAccess.ReadWrite);
+        Console.WriteLine($"  [Session 1] Disk opened. Content type: {iscsiDisk.Content.GetType().FullName}, Length: {iscsiDisk.Content.Length}");
         using var disk = new DiscUtils.Raw.Disk(iscsiDisk.Content, Ownership.None);
         var geometry = disk.Geometry ?? throw new InvalidOperationException("No geometry");
+        Console.WriteLine($"  [Session 1] Geometry: C={geometry.Cylinders}, H={geometry.HeadsPerCylinder}, S={geometry.SectorsPerTrack}, BPS={geometry.BytesPerSector}");
 
+        Console.WriteLine("  [Session 1] Initializing GPT...");
         var gpt = GuidPartitionTable.Initialize(disk);
         var partIdx = gpt.CreateAligned(WellKnownPartitionType.WindowsNtfs, false, alignment);
         var partition = gpt[partIdx];
+        Console.WriteLine($"  [Session 1] Partition: FirstSector={partition.FirstSector}, SectorCount={partition.SectorCount}");
 
         using var partStream = partition.Open();
+        Console.WriteLine($"  [Session 1] Partition stream Length={partStream.Length}");
+        Console.WriteLine("  [Session 1] Formatting as NTFS...");
         using var fs = NtfsFileSystem.Format(partStream, diskName, geometry, partition.FirstSector, partition.SectorCount);
+        Console.WriteLine("  [Session 1] NTFS format completed.");
 
         // Explicitly call Flush() — this is where the bug is (it's a no-op)
+        Console.WriteLine("  [Session 1] Calling Flush() on iSCSI disk content stream...");
         iscsiDisk.Content.Flush();
-        Console.WriteLine("  [Session 1] Format complete. Flush() called. Closing session...");
+        Console.WriteLine("  [Session 1] Flush() called. Closing session...");
     }
     // Session 1 is now fully disposed
+    Console.WriteLine("  [Session 1] Session disposed.");
 
     // --- Session 2: Try to detect filesystem and write ---
-    Console.WriteLine("  [Session 2] Opening new session to write a file...");
+    Console.WriteLine("  [Session 2] Connecting to iSCSI target...");
     {
         var targetInfo = new TargetInfo(iqn, [new TargetAddress(host, port, "iscsi")]);
         var initiator = new Initiator();
         using var session = initiator.ConnectTo(targetInfo);
         var luns = session.GetLuns();
+        Console.WriteLine($"  [Session 2] LUNs found: {luns.Length}");
         if (luns.Length == 0) throw new InvalidOperationException("No LUNs found (session 2)");
 
         using var iscsiDisk = session.OpenDisk(luns[0].Lun, FileAccess.ReadWrite);
+        Console.WriteLine($"  [Session 2] Disk opened. Content type: {iscsiDisk.Content.GetType().FullName}, Length: {iscsiDisk.Content.Length}");
         using var disk = new DiscUtils.Raw.Disk(iscsiDisk.Content, Ownership.None);
 
+        Console.WriteLine("  [Session 2] Reading GPT...");
         var gpt = new GuidPartitionTable(disk);
+        Console.WriteLine($"  [Session 2] Partition count: {gpt.Partitions.Count}");
         var partition = gpt.Partitions.FirstOrDefault()
             ?? throw new InvalidOperationException("No partitions found in session 2");
+        Console.WriteLine($"  [Session 2] Partition: FirstSector={partition.FirstSector}, SectorCount={partition.SectorCount}");
 
         using var partStream = partition.Open();
+        Console.WriteLine($"  [Session 2] Partition stream Length={partStream.Length}, Position={partStream.Position}");
         var fsInfos = FileSystemManager.DetectFileSystems(partStream);
+        Console.WriteLine($"  [Session 2] DetectFileSystems returned {fsInfos.Count} results:");
+        foreach (var fi in fsInfos)
+        {
+            Console.WriteLine($"    - Name={fi.Name}, Description={fi.Description}");
+        }
         var ntfsInfo = fsInfos.FirstOrDefault(f => f.Name == "NTFS")
             ?? throw new InvalidOperationException(
-                "NTFS filesystem not detected in session 2! " +
-                "This demonstrates the DiskStream.Flush() no-op bug — " +
-                "data written in session 1 was never synced to the iSCSI target.");
+                $"NTFS filesystem not detected in session 2! " +
+                $"Detected {fsInfos.Count} filesystems: [{string.Join(", ", fsInfos.Select(f => f.Name))}]. " +
+                $"This demonstrates the DiskStream.Flush() no-op bug — " +
+                $"data written in session 1 was never synced to the iSCSI target.");
 
         using var fs = ntfsInfo.Open(partStream);
         using var fileStream = fs.OpenFile("hello.txt", FileMode.Create, FileAccess.Write);
