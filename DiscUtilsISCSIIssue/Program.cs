@@ -154,6 +154,12 @@ static string SingleSessionFormatWriteRead(
         Console.WriteLine("  [SS] NTFS format completed.");
     }
 
+    Console.WriteLine("  [SS] Calling Flush() on iSCSI disk content stream...");
+    iscsiDisk.Content.Flush();
+    Console.WriteLine("  [SS] Flush() called. Waiting 30 seconds...");
+    Thread.Sleep(TimeSpan.FromSeconds(30));
+    Console.WriteLine("  [SS] 30 second delay complete.");
+
     // Write
     Console.WriteLine("  [SS] Step 2: Re-reading GPT to find partition for write...");
     var gpt2 = new GuidPartitionTable(disk);
@@ -239,7 +245,9 @@ static void MultiSessionFormatThenWriteRead(
         Console.WriteLine("  [Session 1] Flush() called. Closing session...");
     }
     // Session 1 is now fully disposed
-    Console.WriteLine("  [Session 1] Session disposed.");
+    Console.WriteLine("  [Session 1] Session disposed. Waiting 30 seconds...");
+    Thread.Sleep(TimeSpan.FromSeconds(30));
+    Console.WriteLine("  [Session 1] 30 second delay complete.");
 
     // --- Session 2: Try to detect filesystem and write ---
     Console.WriteLine("  [Session 2] Connecting to iSCSI target...");
