@@ -122,8 +122,6 @@ var allPassed = true;
 }
 
 // =========================================================================
-
-// =========================================================================
 // Test 3: Single Session — format, copy 100 x 5MB files with 1s delay
 // =========================================================================
 {
@@ -466,7 +464,7 @@ static void SingleSessionCopyManyFilesWithDelay(
             }
         }
 
-        using var verifyStream = fs.OpenFile("copy-100.bin", FileMode.Open, FileAccess.Read);
+        using var verifyStream = fs.OpenFile($"copy-{filesToCopy:000}.bin", FileMode.Open, FileAccess.Read);
         if (verifyStream.Length != fileSizeBytes)
         {
             throw new InvalidOperationException(
