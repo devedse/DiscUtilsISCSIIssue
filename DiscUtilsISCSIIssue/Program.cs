@@ -145,6 +145,10 @@ var allPassed = true;
     catch (Exception ex)
     {
         Console.WriteLine($"[Test 3] FAILED — {ex.Message}");
+        Console.WriteLine($"  Exception Type: {ex.GetType().FullName}");
+        Console.WriteLine($"  Debug Info: Host={host}, IQN={iqn}, Disk={diskName}, Alignment={partitionAlignment}");
+        Console.WriteLine("  Stack Trace:");
+        Console.WriteLine(ex.ToString());
         allPassed = false;
     }
 
