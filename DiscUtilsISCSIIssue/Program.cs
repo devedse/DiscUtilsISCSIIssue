@@ -23,6 +23,7 @@ using Renci.SshNet;
 // Both tests PASS when iterating all partitions to find the NTFS one:
 //   - Test 1: Single session — format + write + read (PASSES)
 //   - Test 2: Multi session — format in session 1, write+read in session 2 (PASSES)
+//   - Test 3: Single session — format + copy 100 files (5MB each, 1s delay)
 //
 // Environment variables:
 //   ISCSI_HOST     - iSCSI server IP (default: 127.0.0.1)
@@ -111,6 +112,43 @@ var allPassed = true;
     catch (Exception ex)
     {
         Console.WriteLine($"[Test 2] FAILED — {ex.Message}");
+        allPassed = false;
+    }
+
+    Console.WriteLine("  [Cleanup] Removing disk...");
+    RemoveDiskViaSsh(host, sshUsername, sshPassword, volumeGroup, diskName, lvName, backstoreName, iqn);
+    Console.WriteLine("  [Cleanup] Done.");
+    Console.WriteLine();
+}
+
+// =========================================================================
+// Test 3: Single Session — format, copy 100 x 5MB files with 1s delay
+// =========================================================================
+{
+    const string diskName = "test3";
+    var iqn = $"{baseIqn}:{diskName}";
+    var lvName = $"iscsi_{diskName}";
+    var backstoreName = $"disk_{diskName}";
+
+    Console.WriteLine("=== Test 3: Single Session (format + copy 100 files of 5MB with 1s delay) ===");
+    Console.WriteLine($"  IQN: {iqn}");
+
+    Console.WriteLine("  [Setup] Creating iSCSI disk...");
+    CreateDiskViaSsh(host, sshUsername, sshPassword, volumeGroup, thinPool, diskName, lvName, backstoreName, iqn, diskSizeGb);
+    Console.WriteLine("  [Setup] Disk created.");
+
+    try
+    {
+        SingleSessionCopyManyFilesWithDelay(iqn, host, iscsiPort, diskName, partitionAlignment);
+        Console.WriteLine("[Test 3] PASSED");
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"[Test 3] FAILED — {ex.Message}");
+        Console.WriteLine($"  Exception Type: {ex.GetType().FullName}");
+        Console.WriteLine($"  Debug Info: Host={host}, IQN={iqn}, Disk={diskName}, Alignment={partitionAlignment}");
+        Console.WriteLine("  Stack Trace:");
+        Console.WriteLine(ex.ToString());
         allPassed = false;
     }
 
@@ -343,6 +381,98 @@ static void MultiSessionFormatThenWriteRead(
                 Console.WriteLine("  [Session 2] File written successfully.");
                 return;
             }
+        }
+    }
+}
+
+static void SingleSessionCopyManyFilesWithDelay(
+    string iqn, string host, int port, string diskName, int alignment)
+{
+    Console.WriteLine("  Connecting to iSCSI target...");
+    var targetInfo = new TargetInfo(iqn, [new TargetAddress(host, port, "iscsi")]);
+    var initiator = new Initiator();
+    using var session = initiator.ConnectTo(targetInfo);
+    var luns = session.GetLuns();
+    Console.WriteLine($"  LUNs found: {luns.Length}");
+    if (luns.Length == 0) throw new InvalidOperationException("No LUNs found");
+
+    using var iscsiDisk = session.OpenDisk(luns[0].Lun, FileAccess.ReadWrite);
+    using var disk = new DiscUtils.Raw.Disk(iscsiDisk.Content, Ownership.None);
+    var geometry = disk.Geometry ?? throw new InvalidOperationException("No geometry");
+
+    Console.WriteLine("  Step 1: Initializing GPT...");
+    var gpt = GuidPartitionTable.Initialize(disk);
+    var partIdx = gpt.CreateAligned(WellKnownPartitionType.WindowsNtfs, false, alignment);
+    var partition = gpt[partIdx];
+    Console.WriteLine($"  Partition created at index {partIdx}: FirstSector={partition.FirstSector}, SectorCount={partition.SectorCount}");
+
+    using (var ps = partition.Open())
+    {
+        Console.WriteLine("  Formatting as NTFS...");
+        using var fs = NtfsFileSystem.Format(ps, diskName, geometry, partition.FirstSector, partition.SectorCount);
+    }
+
+    iscsiDisk.Content.Flush();
+
+    Console.WriteLine("  Step 2: Detecting NTFS partition...");
+    var gpt2 = new GuidPartitionTable(disk);
+    DiscUtils.FileSystemInfo? ntfsInfo = null;
+    SparseStream? ntfsPartStream = null;
+    for (var i = 0; i < gpt2.Partitions.Count; i++)
+    {
+        var p = gpt2.Partitions[i];
+        var ps = p.Open();
+        var fsInfos = FileSystemManager.DetectFileSystems(ps);
+        var ntfs = fsInfos.FirstOrDefault(f => f.Name == "NTFS");
+        if (ntfs != null)
+        {
+            ntfsInfo = ntfs;
+            ntfsPartStream = ps;
+            break;
+        }
+        else
+        {
+            ps.Dispose();
+        }
+    }
+
+    if (ntfsInfo == null || ntfsPartStream == null)
+    {
+        throw new InvalidOperationException(
+            $"NTFS not detected on any of the {gpt2.Partitions.Count} partitions in test 3.");
+    }
+
+    const int filesToCopy = 100;
+    const int fileSizeBytes = 5 * 1024 * 1024;
+    var payload = new byte[fileSizeBytes];
+    for (var i = 0; i < payload.Length; i++)
+    {
+        payload[i] = (byte)(i % 251);
+    }
+
+    Console.WriteLine($"  Step 3: Writing {filesToCopy} files of 5MB each with 1 second delay...");
+    using (ntfsPartStream)
+    {
+        using var fs = ntfsInfo.Open(ntfsPartStream);
+        for (var i = 1; i <= filesToCopy; i++)
+        {
+            var fileName = $"copy-{i:000}.bin";
+            using var fileStream = fs.OpenFile(fileName, FileMode.Create, FileAccess.Write);
+            fileStream.Write(payload, 0, payload.Length);
+            fileStream.Flush();
+            Console.WriteLine($"    Wrote {fileName} ({fileSizeBytes} bytes)");
+
+            if (i < filesToCopy)
+            {
+                Thread.Sleep(1000);
+            }
+        }
+
+        using var verifyStream = fs.OpenFile($"copy-{filesToCopy:000}.bin", FileMode.Open, FileAccess.Read);
+        if (verifyStream.Length != fileSizeBytes)
+        {
+            throw new InvalidOperationException(
+                $"Verification failed: copy-100.bin has length {verifyStream.Length}, expected {fileSizeBytes}.");
         }
     }
 }
