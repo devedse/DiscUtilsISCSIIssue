@@ -426,6 +426,7 @@ static void SingleSessionCopyManyFilesWithDelay(
         {
             ntfsInfo = ntfs;
             ntfsPartStream = ps;
+            break;
         }
         else
         {
