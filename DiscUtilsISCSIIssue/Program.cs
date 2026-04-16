@@ -519,7 +519,7 @@ static void SingleSessionCopyManyFilesWithDelay(
         if (verifyStream.Length != fileSizeBytes)
         {
             throw new InvalidOperationException(
-                $"Verification failed: copy-100.bin has length {verifyStream.Length}, expected {fileSizeBytes}.");
+                $"Verification failed: copy-{filesToCopy:000}.bin has length {verifyStream.Length}, expected {fileSizeBytes}.");
         }
     }
 }
@@ -623,7 +623,9 @@ static void SingleSessionCopyManyFilesWithKeepalive(
                     }
                     if (DateTime.UtcNow < sleepDeadline)
                     {
-                        // Issue a small read to keep the iSCSI TCP connection alive
+                        // Read sector 0 of the raw iSCSI disk (below the NTFS layer) to keep
+                        // the TCP connection alive. Reading directly from iscsiDisk.Content is
+                        // safe here because no NTFS operation is in progress during the sleep.
                         iscsiDisk.Content.Position = 0;
                         iscsiDisk.Content.ReadExactly(keepaliveBuf, 0, keepaliveBuf.Length);
                     }
@@ -635,7 +637,7 @@ static void SingleSessionCopyManyFilesWithKeepalive(
         if (verifyStream.Length != fileSizeBytes)
         {
             throw new InvalidOperationException(
-                $"Verification failed: copy-100.bin has length {verifyStream.Length}, expected {fileSizeBytes}.");
+                $"Verification failed: copy-{filesToCopy:000}.bin has length {verifyStream.Length}, expected {fileSizeBytes}.");
         }
     }
 }

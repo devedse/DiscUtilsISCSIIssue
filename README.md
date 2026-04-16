@@ -13,7 +13,7 @@ This repo verifies that DiscUtils' iSCSI initiator can correctly format a GPT + 
 | **Test 1** | Single session — format + write + read in one iSCSI session | ✅ PASS |
 | **Test 2** | Multi session — format in session 1, write + read in session 2 | ✅ PASS |
 | **Test 3** | Single session — format + copy 100 files of 5 MB with a 1 second delay between files | ❌ FAIL |
-| **Test 4** | Same as Test 3 but with periodic keepalive reads during each sleep interval | ⬜ investigating |
+| **Test 4** | Same as Test 3 but with periodic keepalive reads during each sleep interval | 🔬 INVESTIGATING |
 
 ## Known Issue — Test 3: iSCSI Connection Drops After ~45 Seconds
 
