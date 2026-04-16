@@ -1,5 +1,5 @@
 diff --git a/Library/DiscUtils.Iscsi/Connection.cs b/Library/DiscUtils.Iscsi/Connection.cs
-index 0b4abff8..2522bae0 100644
+index 0b4abff8..4042fc0e 100644
 --- a/Library/DiscUtils.Iscsi/Connection.cs
 +++ b/Library/DiscUtils.Iscsi/Connection.cs
 @@ -46,6 +46,17 @@ internal sealed class Connection : IDisposable
@@ -71,7 +71,7 @@ index 0b4abff8..2522bae0 100644
              }
          }
          catch (EndOfStreamException)
-@@ -133,6 +162,59 @@ internal sealed class Connection : IDisposable
+@@ -133,6 +162,61 @@ internal sealed class Connection : IDisposable
          }
      }
  
@@ -121,6 +121,8 @@ index 0b4abff8..2522bae0 100644
 +        EndianUtilities.WriteBytesBigEndian(0xFFFFFFFF, nopOut, 16);
 +        // Bytes 20-23: TTT = 0xFFFFFFFF
 +        EndianUtilities.WriteBytesBigEndian(0xFFFFFFFF, nopOut, 20);
++        // Bytes 24-27: CmdSN (not incremented for immediate PDUs)
++        EndianUtilities.WriteBytesBigEndian(Session.CommandSequenceNumber, nopOut, 24);
 +        // Bytes 28-31: ExpStatSN
 +        EndianUtilities.WriteBytesBigEndian(ExpectedStatusSequenceNumber, nopOut, 28);
 +
@@ -131,7 +133,7 @@ index 0b4abff8..2522bae0 100644
      /// <summary>
      /// Sends an SCSI command (aka task) to a LUN via the connected target.
      /// </summary>
-@@ -142,6 +224,9 @@ internal sealed class Connection : IDisposable
+@@ -142,6 +226,9 @@ internal sealed class Connection : IDisposable
      /// <returns>The number of bytes received.</returns>
      public int Send(ScsiCommand cmd, ReadOnlySpan<byte> outBuffer, Span<byte> inBuffer)
      {
@@ -141,7 +143,7 @@ index 0b4abff8..2522bae0 100644
          for (var i = 0; ; i++)
          {
              try
-@@ -281,6 +366,11 @@ internal sealed class Connection : IDisposable
+@@ -281,6 +368,11 @@ internal sealed class Connection : IDisposable
              {
              }
          }
@@ -153,7 +155,7 @@ index 0b4abff8..2522bae0 100644
      }
  
      /// <summary>
-@@ -293,6 +383,9 @@ internal sealed class Connection : IDisposable
+@@ -293,6 +385,9 @@ internal sealed class Connection : IDisposable
      /// <returns>The number of bytes received.</returns>
      public async ValueTask<int> SendAsync(ScsiCommand cmd, ReadOnlyMemory<byte> outBuffer, Memory<byte> inBuffer, CancellationToken cancellationToken)
      {
@@ -163,7 +165,7 @@ index 0b4abff8..2522bae0 100644
          for (var i = 0; ; i++)
          {
              try
-@@ -410,6 +503,11 @@ internal sealed class Connection : IDisposable
+@@ -410,6 +505,11 @@ internal sealed class Connection : IDisposable
              {
              }
          }
@@ -175,7 +177,7 @@ index 0b4abff8..2522bae0 100644
      }
  
      public T Send<T>(ScsiCommand cmd, ReadOnlySpan<byte> buffer, int expected)
-@@ -816,32 +914,108 @@ internal sealed class Connection : IDisposable
+@@ -816,32 +916,115 @@ internal sealed class Connection : IDisposable
  
      private ProtocolDataUnit ReadPdu()
      {
@@ -256,6 +258,9 @@ index 0b4abff8..2522bae0 100644
 +
 +    /// <summary>
 +    /// Responds to a target-initiated NOP-In with a NOP-Out (RFC 3720 §10.18/10.19).
++    /// Target-initiated NOP-In has TTT != 0xFFFFFFFF and requires a NOP-Out reply.
++    /// The StatSN in a target-initiated NOP-In is informational and does NOT consume
++    /// a sequence number, so we must NOT call SeenStatusSequenceNumber here.
 +    /// </summary>
 +    private void HandleNopIn(ProtocolDataUnit pdu)
 +    {
@@ -275,9 +280,11 @@ index 0b4abff8..2522bae0 100644
 +        // LUN at offset 8
 +        var lun = EndianUtilities.ToUInt64BigEndian(headerData.AsSpan(8));
 +
-+        // Update ExpectedStatusSequenceNumber from NOP-In StatSN
-+        var statSN = EndianUtilities.ToUInt32BigEndian(headerData.AsSpan(24));
-+        SeenStatusSequenceNumber(statSN);
++        // NOTE: We intentionally do NOT call SeenStatusSequenceNumber() here.
++        // RFC 3720 §10.19: A target-initiated NOP-In carries a StatSN, but this
++        // StatSN is NOT consumed — it's the same value the target will use for the
++        // next real command response. Advancing ExpectedStatusSequenceNumber here
++        // would cause the next ParseResponse to fail with a sequence mismatch.
 +
 +        // Build NOP-Out response (RFC 3720 §10.18)
 +        var nopOut = new byte[48];
@@ -291,6 +298,8 @@ index 0b4abff8..2522bae0 100644
 +        EndianUtilities.WriteBytesBigEndian(0xFFFFFFFF, nopOut, 16);
 +        // Bytes 20-23: Target Transfer Tag (echo from NOP-In)
 +        EndianUtilities.WriteBytesBigEndian(targetTransferTag, nopOut, 20);
++        // Bytes 24-27: CmdSN (not consumed for immediate PDUs with ITT=0xFFFFFFFF)
++        EndianUtilities.WriteBytesBigEndian(Session.CommandSequenceNumber, nopOut, 24);
 +        // Bytes 28-31: ExpStatSN
 +        EndianUtilities.WriteBytesBigEndian(ExpectedStatusSequenceNumber, nopOut, 28);
 +
