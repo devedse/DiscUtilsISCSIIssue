@@ -12,6 +12,10 @@ jobs:
     - uses: actions/checkout@v6
       with:
         submodules: true
+    - name: Apply DiscUtils patches
+      run: |
+        cd lib/DiscUtils
+        git apply ../../patches/0001-iscsi-nop-keepalive.patch
     - name: Setup .NET
       uses: actions/setup-dotnet@v5
       with:
