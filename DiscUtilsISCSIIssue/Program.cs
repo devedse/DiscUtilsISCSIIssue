@@ -21,14 +21,11 @@ using Renci.SshNet;
 // at index 0. Code that blindly uses Partitions[0] will get the reserved
 // partition (no filesystem) instead of the actual data partition.
 //
-// Test results:
-//   - Test 1: Single session — format + write + read (PASSES)
-//   - Test 2: Multi session — format in session 1, write+read in session 2 (PASSES)
-//   - Test 3: Single session — format + copy 100 files (5MB each, 1s delay) (FAILS)
-//             Fails with EndOfStreamException after ~45 files due to iSCSI
-//             connection timeout (~45s of cumulative idle time).
-//   - Test 4: Same as Test 3 but with keepalive reads during each sleep interval
-//             (investigating whether keepalive prevents the connection drop)
+// Test results (all pass with NOP-In/NOP-Out patch applied):
+//   - Test 1: Single session — format + write + read
+//   - Test 2: Multi session — format in session 1, write+read in session 2
+//   - Test 3: Single session — format + copy 100 files (5MB each, 1s delay)
+//   - Test 4: Same as Test 3 but with periodic keepalive reads during each sleep interval
 //
 // Environment variables:
 //   ISCSI_HOST     - iSCSI server IP (default: 127.0.0.1)
