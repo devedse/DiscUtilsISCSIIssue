@@ -8,7 +8,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Devedse.DiscUtils" Version="1.0.103" />
+    <ProjectReference Include="..\lib\DiscUtils\Library\DiscUtils\DiscUtils.csproj" />
     <PackageReference Include="SSH.NET" Version="2025.1.0" />
   </ItemGroup>
 

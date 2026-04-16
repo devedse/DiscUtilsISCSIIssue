@@ -41,7 +41,7 @@ using Renci.SshNet;
 // See .github/workflows/repro.yml for the exact setup steps.
 // ============================================================================
 
-SetupHelper.SetupCompleteAot();
+SetupHelper.SetupComplete();
 
 var host = Environment.GetEnvironmentVariable("ISCSI_HOST") ?? "127.0.0.1";
 var sshUsername = Environment.GetEnvironmentVariable("SSH_USERNAME") ?? "root";
